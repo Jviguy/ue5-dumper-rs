@@ -1,0 +1,13 @@
+/target
+/Cargo.lock.bak
+
+# Editor/IDE
+/.idea
+/.vscode
+*.swp
+*.swo
+
+# Dumper output (generated artifacts, not source of truth)
+/sdk_dump.json
+/sdk.rs
+/chain.rs

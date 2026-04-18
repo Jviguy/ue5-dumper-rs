@@ -1,0 +1,19 @@
+[package]
+name = "ue5-dumper"
+version = "0.1.0"
+edition = "2021"
+description = "Unreal Engine 5 SDK dumper for Linux, reading remote process memory via process_vm_readv. Works with native Linux builds and Windows games under Wine/Proton."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Jviguy/ue5-dumper-rs"
+keywords = ["unreal", "ue5", "sdk", "dumper", "reverse-engineering"]
+categories = ["command-line-utilities", "development-tools"]
+
+[[bin]]
+name = "ue5-dumper"
+path = "src/main.rs"
+
+[dependencies]
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive"] }
