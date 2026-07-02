@@ -128,37 +128,16 @@ impl FNamePool {
     ) -> Option<String> {
         let block_idx = comparison_idx >> 16;
         let offset = (comparison_idx & 0xFFFF) as usize;
+        let byte_offset = offset * self.stride;
 
         let block_data = self.cache.get_or_read(proc, &self.block_ptrs, block_idx)?;
-        let byte_offset = offset * self.stride;
-        let hdr_pos = byte_offset + self.header_off;
-        if hdr_pos + 2 > block_data.len() {
-            return None;
-        }
-
-        let header = u16::from_le_bytes([block_data[hdr_pos], block_data[hdr_pos + 1]]);
-        let is_wide = (header & 1) != 0;
-        let len = (header >> self.len_shift) as usize;
-
-        if len == 0 || len > MAX_NAME_LEN {
-            return None;
-        }
-
-        let str_start = hdr_pos + 2;
-        let str_bytes = if is_wide { len * 2 } else { len };
-        if str_start + str_bytes > block_data.len() {
-            return None;
-        }
-
-        let name = if is_wide {
-            let chars: Vec<u16> = block_data[str_start..str_start + str_bytes]
-                .chunks_exact(2)
-                .map(|c| u16::from_le_bytes([c[0], c[1]]))
-                .collect();
-            String::from_utf16_lossy(&chars)
-        } else {
-            String::from_utf8_lossy(&block_data[str_start..str_start + str_bytes]).into_owned()
-        };
+        let (name, _) = decode_entry(
+            block_data,
+            byte_offset,
+            self.header_off,
+            self.len_shift,
+            self.stride,
+        )?;
 
         if number > 0 {
             Some(format!("{}_{}", name, number - 1))
@@ -178,13 +157,62 @@ impl FNamePool {
         }
         println!("[+] FNamePool validated: index 0 = \"None\"");
 
-        for i in 1..=10 {
-            if let Some(name) = self.resolve_index(proc, i, 0) {
-                println!("    FName[{i}] = \"{name}\"");
+        // FName indices are byte-offset/stride units, not sequential integers, so
+        // we can't just resolve_index(1), (2)... Walk block 0 entry-by-entry instead.
+        if let Some(block0) = self.cache.get_or_read(proc, &self.block_ptrs, 0) {
+            let mut byte_off = 0usize;
+            for i in 0..10 {
+                match decode_entry(block0, byte_off, self.header_off, self.len_shift, self.stride) {
+                    Some((name, advance)) => {
+                        println!("    FName[{i}] @ off {byte_off} = \"{name}\"");
+                        byte_off += advance;
+                    }
+                    None => break,
+                }
             }
         }
         true
     }
+}
+
+/// Decode one FName entry at `byte_off` within a block's bytes.
+/// Returns the name and how many bytes this entry occupies (stride-aligned),
+/// so callers can walk to the next entry.
+fn decode_entry(
+    block: &[u8],
+    byte_off: usize,
+    header_off: usize,
+    len_shift: u32,
+    stride: usize,
+) -> Option<(String, usize)> {
+    let hdr_pos = byte_off + header_off;
+    if hdr_pos + 2 > block.len() {
+        return None;
+    }
+    let header = u16::from_le_bytes([block[hdr_pos], block[hdr_pos + 1]]);
+    let is_wide = (header & 1) != 0;
+    let len = (header >> len_shift) as usize;
+    if len == 0 || len > MAX_NAME_LEN {
+        return None;
+    }
+    let str_start = hdr_pos + 2;
+    let str_bytes = if is_wide { len * 2 } else { len };
+    if str_start + str_bytes > block.len() {
+        return None;
+    }
+    let name = if is_wide {
+        let chars: Vec<u16> = block[str_start..str_start + str_bytes]
+            .chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        String::from_utf16_lossy(&chars)
+    } else {
+        String::from_utf8_lossy(&block[str_start..str_start + str_bytes]).into_owned()
+    };
+    // Next entry is aligned up to `stride`.
+    let raw = header_off + 2 + str_bytes;
+    let advance = raw.div_ceil(stride) * stride;
+    Some((name, advance))
 }
 
 /// Try to decode the first entry in a block as "None".

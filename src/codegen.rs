@@ -58,11 +58,11 @@ pub fn generate_chain(classes: &[ClassDump], gworld_offset: usize) -> String {
     if let Some(off) = find_property_offset(classes, "PlayerController", "Player") {
         writeln!(out, "// Hint: PlayerController.Player = {off:#X}").unwrap();
     }
-    writeln!(
-        out,
-        "pub const OFF_PLAYER_CONTROLLER: usize = 0x38; // ULocalPlayer.PlayerController (UE5 standard)"
-    )
-    .unwrap();
+    if let Some(off) = find_property_offset(classes, "Player", "PlayerController") {
+        writeln!(out, "pub const OFF_PLAYER_CONTROLLER: usize = {off:#X}; // UPlayer.PlayerController").unwrap();
+    } else {
+        writeln!(out, "// WARNING: Player.PlayerController not found in dump").unwrap();
+    }
 
     if let Some(off) = find_property_offset(classes, "PlayerController", "AcknowledgedPawn") {
         writeln!(out, "pub const OFF_ACKNOWLEDGED_PAWN: usize = {off:#X};").unwrap();
@@ -82,7 +82,7 @@ fn emit_header(out: &mut String) {
     writeln!(out, "// Generated: {}", timestamp()).unwrap();
     writeln!(
         out,
-        "#![allow(dead_code, non_snake_case, non_camel_case_types, ambiguous_glob_reexports)]"
+        "#![allow(dead_code, non_snake_case, non_camel_case_types, non_upper_case_globals, ambiguous_glob_reexports)]"
     )
     .unwrap();
     writeln!(out).unwrap();
@@ -337,12 +337,21 @@ fn emit_struct(
     // Associated constants & bitfield accessors live in impl blocks.
     emit_struct_impl(out, class, &struct_name, &fields);
 
-    // Compile-time size assertion.
+    // Compile-time size assertion. Rust `#[repr(C)]` pads tail to the
+    // struct's alignment; if UE's PropertiesSize isn't a multiple of that
+    // alignment, size_of will round up. Compare against both the reported
+    // size and its alignment-rounded form so we don't false-positive on
+    // alignment-padded layouts.
     if class.size > 0 {
+        let size = class.size as usize;
         writeln!(
             out,
-            "    const _: () = assert!(core::mem::size_of::<{struct_name}>() == {:#X});",
-            class.size
+            "    const _: () = {{\n        \
+             let s = core::mem::size_of::<{struct_name}>();\n        \
+             let a = core::mem::align_of::<{struct_name}>();\n        \
+             let rounded = ({size:#X} + a - 1) & !(a - 1);\n        \
+             assert!(s == {size:#X} || s == rounded);\n    \
+             }};"
         )
         .unwrap();
     }
@@ -920,13 +929,16 @@ fn sanitize_ident(name: &str) -> String {
 }
 
 fn is_rust_keyword(s: &str) -> bool {
+    // Includes strict keywords, reserved keywords, and `Self` (capital S) —
+    // UE names are case-preserving and "Self" shows up as an enum variant.
     matches!(
         s,
-        "type" | "self" | "super" | "crate" | "mod" | "fn" | "struct" | "enum" | "trait"
-            | "impl" | "use" | "pub" | "const" | "static" | "let" | "mut" | "ref" | "as"
-            | "in" | "for" | "if" | "else" | "while" | "loop" | "match" | "return" | "break"
-            | "continue" | "move" | "box" | "where" | "async" | "await" | "dyn" | "true"
-            | "false"
+        "Self" | "type" | "self" | "super" | "crate" | "mod" | "fn" | "struct" | "enum"
+            | "trait" | "impl" | "use" | "pub" | "const" | "static" | "let" | "mut" | "ref"
+            | "as" | "in" | "for" | "if" | "else" | "while" | "loop" | "match" | "return"
+            | "break" | "continue" | "move" | "box" | "where" | "async" | "await" | "dyn"
+            | "true" | "false" | "extern" | "unsafe" | "yield" | "do" | "macro" | "priv"
+            | "abstract" | "become" | "final" | "override" | "typeof" | "unsized" | "virtual"
     )
 }
 
@@ -1086,7 +1098,8 @@ mod tests {
 
         // Size assertion.
         assert!(
-            src.contains("assert!(core::mem::size_of::<Actor>() == 0x80)"),
+            src.contains("let s = core::mem::size_of::<Actor>()")
+                && src.contains("assert!(s == 0x80 || s == rounded)"),
             "size assert missing"
         );
 

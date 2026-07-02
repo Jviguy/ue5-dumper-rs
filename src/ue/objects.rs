@@ -1,4 +1,5 @@
 use crate::mem::ProcessHandle;
+use crate::scanner::EngineLayout;
 use super::offsets::*;
 use super::fname::FNamePool;
 
@@ -21,7 +22,7 @@ impl GObjects {
     /// Read the entire GObjects array using an explicit FUObjectArray address.
     ///
     /// The scanner ([`crate::scanner::scan`]) produces this address.
-    pub fn with_addr(proc: &ProcessHandle, gobjects_addr: usize) -> Option<Self> {
+    pub fn with_addr(proc: &ProcessHandle, gobjects_addr: usize, layout: EngineLayout) -> Option<Self> {
         let chunks_ptr = proc.ptr(gobjects_addr + UOBJECT_ARRAY_OBJECTS)?;
         let num_elements = proc.read::<i32>(gobjects_addr + UOBJECT_ARRAY_NUM_ELEMENTS)? as usize;
 
@@ -30,8 +31,9 @@ impl GObjects {
             return None;
         }
 
+        let item_size = layout.fuobject_item_size;
         let num_chunks = (num_elements + OBJECTS_PER_CHUNK - 1) / OBJECTS_PER_CHUNK;
-        println!("[*] GObjects: {num_elements} elements in {num_chunks} chunks");
+        println!("[*] GObjects: {num_elements} elements in {num_chunks} chunks (item stride {item_size:#X})");
 
         // Read chunk pointer array
         let chunk_ptrs_bytes = proc.read_bytes(chunks_ptr, num_chunks * 8)?;
@@ -43,6 +45,13 @@ impl GObjects {
 
         let mut objects = Vec::with_capacity(num_elements);
 
+        // Page-sized batches. ReadProcessMemory fails for the entire range if
+        // any page in it is uncommitted, and shipping UE builds routinely leave
+        // the tail of a chunk uncommitted. Reading in 4 KB slabs lets us skip
+        // the holes instead of losing the whole chunk.
+        const BATCH_BYTES: usize = 4096;
+        let items_per_batch = BATCH_BYTES / item_size;
+
         for (chunk_idx, &chunk_ptr) in chunk_ptrs.iter().enumerate() {
             if chunk_ptr == 0 {
                 continue;
@@ -50,30 +59,37 @@ impl GObjects {
 
             let remaining = num_elements - chunk_idx * OBJECTS_PER_CHUNK;
             let count = remaining.min(OBJECTS_PER_CHUNK);
-            let chunk_size = count * FUOBJECT_ITEM_SIZE;
 
-            let chunk_data = match proc.read_bytes(chunk_ptr, chunk_size) {
-                Some(d) => d,
-                None => {
-                    eprintln!("[!] Failed to read chunk {chunk_idx} at {chunk_ptr:#X}");
-                    continue;
-                }
-            };
+            let mut i = 0;
+            while i < count {
+                let batch_count = items_per_batch.min(count - i);
+                let batch_size = batch_count * item_size;
+                let batch_addr = chunk_ptr + i * item_size;
 
-            for i in 0..count {
-                let item_off = i * FUOBJECT_ITEM_SIZE + FUOBJECT_ITEM_OBJ;
-                if item_off + 8 > chunk_data.len() {
-                    break;
-                }
-                let obj_ptr = read_u64_le(&chunk_data[item_off..item_off + 8]) as usize;
+                let batch = match proc.read_bytes(batch_addr, batch_size) {
+                    Some(d) => d,
+                    None => {
+                        // Unmapped slab — skip it and keep going. Chunks often
+                        // have uncommitted tail pages beyond the live items.
+                        i += batch_count;
+                        continue;
+                    }
+                };
 
-                if obj_ptr == 0 {
-                    continue;
+                for j in 0..batch_count {
+                    let item_off = j * item_size + FUOBJECT_ITEM_OBJ;
+                    if item_off + 8 > batch.len() {
+                        break;
+                    }
+                    let obj_ptr = read_u64_le(&batch[item_off..item_off + 8]) as usize;
+                    if obj_ptr == 0 {
+                        continue;
+                    }
+                    if let Some(obj) = read_uobject_ref(proc, obj_ptr) {
+                        objects.push(obj);
+                    }
                 }
-
-                if let Some(obj) = read_uobject_ref(proc, obj_ptr) {
-                    objects.push(obj);
-                }
+                i += batch_count;
             }
         }
 

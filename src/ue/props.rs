@@ -85,7 +85,11 @@ pub fn dump_classes(
             None => continue,
         };
 
-        if class_name != "Class" && class_name != "ScriptStruct" {
+        let is_dumpable_struct = class_name == "Class"
+            || class_name == "ScriptStruct"
+            || class_name == "BlueprintGeneratedClass"
+            || class_name == "WidgetBlueprintGeneratedClass";
+        if !is_dumpable_struct {
             continue;
         }
 

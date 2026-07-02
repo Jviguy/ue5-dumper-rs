@@ -1,13 +1,21 @@
 /target
 /Cargo.lock.bak
+/.omc
 
 # Editor/IDE
 /.idea
 /.vscode
 *.swp
 *.swo
+*.bak
 
 # Dumper output (generated artifacts, not source of truth)
 /sdk_dump.json
 /sdk.rs
 /chain.rs
+/sdk_dump*.json
+/sdk*.rs
+/chain*.rs
+
+# Internal cheat scaffold (personal, game-specific)
+/cheat

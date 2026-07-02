@@ -23,7 +23,11 @@ pub const MIN_VALID_PTR: usize = 0x10000;
 pub const MAX_OBJECTS: usize = 10_000_000;
 
 /// Minimum GObjects count a real game must have (used to validate scan hits).
-pub const MIN_OBJECTS: usize = 100_000;
+///
+/// Small shipping UE5 titles with stripped content can run ~30K objects;
+/// the pre-engine load floor is typically ~20K. Tune on a per-title basis
+/// if the scanner rejects a legitimate hit.
+pub const MIN_OBJECTS: usize = 20_000;
 
 /// Upper bound for FField linked-list walks (guards against cycles).
 pub const MAX_FIELD_DEPTH: usize = 4096;
@@ -56,26 +60,31 @@ pub const OBJECTS_PER_CHUNK: usize = 65536;
 pub const FUOBJECT_ITEM_SIZE: usize = 0x20;
 pub const FUOBJECT_ITEM_OBJ: usize = 0x00;
 
-// ── UObject layout ──────────────────────────────────────────────────
-// Case-preserving FName (8-byte FName + 8-byte display copy → Outer at +0x28).
-// Standard (non-case-preserving) builds place Outer at +0x20; adjust here if
-// targeting such a game.
+// ── UObject layout (non-case-preserving shipping UE5) ──────────────
+// UObjectBase: vtable(8) + ObjectFlags(4) + InternalIndex(4) + Class(8)
+// + Name(8, FName) + Outer(8). Total size 0x28.
+// For WITH_CASE_PRESERVING_NAME builds (FName = 16 bytes), all of these
+// shift by 0x08 — use [`EngineLayout`] override to remap at runtime.
 pub const UOBJECT_CLASS: usize = 0x10;
 pub const UOBJECT_FNAME: usize = 0x18;
-pub const UOBJECT_OUTER: usize = 0x28;
+pub const UOBJECT_OUTER: usize = 0x20;
 
 // ── UField layout (extends UObject) ──────────────────────────────────
-pub const UFIELD_NEXT: usize = 0x30;
+pub const UFIELD_NEXT: usize = 0x28;
 
 // ── UStruct layout (extends UField) ─────────────────────────────────
-pub const USTRUCT_SUPER: usize = 0x48;
-pub const USTRUCT_CHILDREN: usize = 0x50;       // UField* linked list (UFunctions)
-pub const USTRUCT_CHILD_PROPERTIES: usize = 0x58; // FField* linked list (properties)
-pub const USTRUCT_PROPERTIES_SIZE: usize = 0x60;
+pub const USTRUCT_SUPER: usize = 0x40;
+pub const USTRUCT_CHILDREN: usize = 0x48;       // UField* linked list (UFunctions)
+pub const USTRUCT_CHILD_PROPERTIES: usize = 0x50; // FField* linked list (properties)
+pub const USTRUCT_PROPERTIES_SIZE: usize = 0x58;
 
 // ── UFunction layout (extends UStruct) ──────────────────────────────
-pub const UFUNCTION_FLAGS: usize = 0xC0;        // EFunctionFlags (u32)
-pub const UFUNCTION_FUNC: usize = 0xE0;         // FNativeFuncPtr
+// UStruct size on non-CPN UE5.3 is 0xB0 (after PropertyLink/RefLink/
+// DestructorLink/PostConstructLink + ScriptAndPropertyObjectReferences
+// + UnresolvedScriptProperties + UninitializedProperties). UFunction
+// adds FunctionFlags(u32) then tail members, placing Func at +0xB0+0x28.
+pub const UFUNCTION_FLAGS: usize = 0xB0;        // EFunctionFlags (u32)
+pub const UFUNCTION_FUNC: usize = 0xD8;         // FNativeFuncPtr
 
 // ── FField layout ───────────────────────────────────────────────────
 pub const FFIELD_CLASS_PRIVATE: usize = 0x08;
@@ -91,18 +100,19 @@ pub const FPROPERTY_ELEMENT_SIZE: usize = 0x34;
 pub const FPROPERTY_OFFSET: usize = 0x44;
 
 // ── FBoolProperty extras (extends FProperty) ────────────────────────
-// Four u8s packed at the tail of FProperty. `field_mask` is the single bit
+// Four u8s appended *after* the FProperty base (size 0x70 on UE5.3 non-CPN):
+// FieldSize, ByteOffset, ByteMask, FieldMask. `field_mask` is the single bit
 // set for native bitfield booleans, or 0xFF for standard bool fields.
-pub const FBOOL_PROP_FIELD_SIZE: usize = 0x48;
-pub const FBOOL_PROP_BYTE_OFFSET: usize = 0x49;
-pub const FBOOL_PROP_BYTE_MASK: usize = 0x4A;
-pub const FBOOL_PROP_FIELD_MASK: usize = 0x4B;
+pub const FBOOL_PROP_FIELD_SIZE: usize = 0x70;
+pub const FBOOL_PROP_BYTE_OFFSET: usize = 0x71;
+pub const FBOOL_PROP_BYTE_MASK: usize = 0x72;
+pub const FBOOL_PROP_FIELD_MASK: usize = 0x73;
 
 // ── UEnum layout (extends UField) ───────────────────────────────────
-// UEnum ends of UField (+0x38), then FString CppType (0x10 bytes), then
-// TArray<TPair<FName, int64>> Names at +0x48. Each pair is 16 bytes
-// (u32 ComparisonIndex + u32 Number + i64 Value).
-pub const UENUM_NAMES: usize = 0x48;
+// UField ends at +0x30, then FString CppType (16 bytes: ptr+num+max),
+// then TArray<TPair<FName, int64>> Names at +0x40. Each pair is 16
+// bytes (u32 ComparisonIndex + u32 Number + i64 Value).
+pub const UENUM_NAMES: usize = 0x40;
 pub const UENUM_VARIANT_STRIDE: usize = 16;
 
 // ── Property subtype extras ─────────────────────────────────────────

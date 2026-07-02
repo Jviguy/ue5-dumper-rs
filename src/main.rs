@@ -1,7 +1,4 @@
-mod mem;
-mod ue;
-mod scanner;
-mod codegen;
+use ue5_dumper::{codegen, mem, scanner, ue};
 
 use clap::Parser;
 use mem::ProcessHandle;
@@ -17,17 +14,20 @@ struct SdkDump {
     enums: Vec<ue::props::EnumDump>,
 }
 
-/// Unreal Engine 5 SDK dumper for Linux.
+/// Unreal Engine 5 SDK dumper.
 ///
-/// Attaches to a running UE5 game via process_vm_readv(2), scans for GNames,
-/// GObjects, and GWorld, then emits dumps in the requested formats.
+/// Attaches to a running UE5 game (Linux via process_vm_readv, Windows via
+/// ReadProcessMemory), scans for GNames, GObjects, and GWorld, then emits
+/// dumps in the requested formats.
 #[derive(Parser, Debug)]
 #[command(name = "ue5-dumper", version, about, long_about = None)]
 struct Args {
-    /// Substring of the target process cmdline.
+    /// Substring of the target process name.
     ///
-    /// Matched against /proc/<pid>/cmdline. For Wine/Proton games use the
-    /// Windows .exe name (e.g. "MyGame-Win64-Shipping.exe").
+    /// On Linux matched against /proc/<pid>/cmdline; on Windows matched
+    /// against the image name from Toolhelp. Use the game's .exe name
+    /// (e.g. "MyGame-Win64-Shipping.exe") — works for both native Windows
+    /// and Wine/Proton.
     #[arg(short, long)]
     process: String,
 
@@ -103,7 +103,7 @@ fn main() -> ExitCode {
     }
 
     println!("[*] Reading GObjects...");
-    let gobjects = match ue::objects::GObjects::with_addr(&proc, scan.gobjects) {
+    let gobjects = match ue::objects::GObjects::with_addr(&proc, scan.gobjects, scan.layout) {
         Some(g) => g,
         None => {
             eprintln!("[!] Failed to read GObjects");
